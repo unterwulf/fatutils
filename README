@@ -1,0 +1,25 @@
+fatutils
+========
+
+Copyright (c) 2021 Vitaly Sinilin <vs@kp4.ru>
+
+Published under the terms of the MIT License.
+
+This package contains a pickle and utils for working with FAT filesystem
+images using GNU poke.
+
+Installation
+============
+
+In order to use these tools you will need GNU poke 1.2. You can just run them
+from the source directory or you can use the following command under super
+user to install them system-wide (tune PREFIX value, default is /usr/local):
+
+  $ make PREFIX=/usr install
+
+Known issues
+============
+
+All utils but fatinfo and fatcluster works painfully slow. They are in fact
+useless for anything bigger than FAT12 due to performance issues. Contact me
+if you know what is wrong with them.

@@ -1,0 +1,129 @@
+#!/usr/bin/poke -L
+!#
+/* (c) 2021 Vitaly Sinilin.  */
+
+load fat;
+
+fun dump_dir = (int32 fd, string dirname) void:
+{
+    var br = FAT_boot_record @ fd : 0#B;
+    var fat_bits = br.bpb.fat_bits;
+    var bad_cluster = br.bpb.bad_cluster;
+
+    var fat = byte[br.bpb.sectors_per_fat*br.bpb.bytes_per_sector]
+         @ fd : (br.bpb.reserved_sectors*br.bpb.bytes_per_sector)#B;
+    var nr_data_clusters = br.bpb.nr_data_clusters;
+
+    var comps = string[]();
+    var start = 0;
+    for (var i = 0; i < dirname'length; i++) {
+        if (dirname[i] == '/') {
+            if (i > start)
+                comps += [dirname[start:i]];
+            start = i + 1;
+        }
+    }
+
+    if (start != dirname'length)
+        comps += [dirname[start:]];
+
+    fun dump_entry = (FAT_dir_entry entry) void:
+    {
+        var nr_frags = 0;
+        if (entry.is_label) {
+            if (entry.first_cluster != 0)
+                printf "!!! Label has invalid first cluster %u32d\n", entry.first_cluster;
+            if (entry.size != 0)
+                printf "!!! Label has non-zero size %u32d\n", entry.size;
+        } else if (!entry.is_deleted) {
+            var rawname = catos(entry.name.raw);
+
+            if (rawname == ".          " || rawname == "..         ") {
+                /* Do nothing. */;
+            } else if (entry.first_cluster < 2 || entry.first_cluster >= bad_cluster) {
+                printf "!!! Invalid first cluster %u32d\n", entry.first_cluster;
+            } else {
+                nr_frags = 1;
+                var next_cluster = entry.first_cluster;
+                while (next_cluster < bad_cluster) {
+                    var prev_cluster = next_cluster;
+                    next_cluster = fat_next_cluster(fat, fat_bits, next_cluster);
+                    if (next_cluster < bad_cluster && next_cluster != prev_cluster+1)
+                        nr_frags++;
+                }
+            }
+        }
+
+        printf "%s %s %s %s %s %s %s %s\n",
+            entry.attr_str,
+            rpad(entry.full_name, 12),
+            entry.date_str(entry.mdate), entry.time_str(entry.mtime),
+            entry.date_str(entry.adate),
+            lpad(ltos(entry.first_cluster), 4),
+            lpad(ltos(entry.size), 7),
+            lpad(ltos(nr_frags), 4);
+    }
+
+    fun descent_dir = (uint32 cluster, string[] comps) void:
+    {
+        var entries = FAT_dir_entry[br.bpb.sectors_per_cluster*br.bpb.bytes_per_sector/32]
+            @ fd : br.bpb.cluster_offset(cluster);
+
+        for (entry in entries) {
+            if (entry.name.raw[0] == 0)
+                return;
+
+            if (comps'length == 0) {
+                dump_entry(entry);
+            } else if (entry.is_dir && entry.full_name == comps[0]) {
+                descent_dir(entry.first_cluster, comps[1:]);
+                return;
+            }
+        }
+
+        /* Directory spans over more than one cluster. */
+        descent_dir(fat_next_cluster(fat, fat_bits, cluster), comps);
+    }
+
+    if (fat_bits == 32) {
+        descent_dir(br.bpb.u.fat32.root_cluster, comps);
+    } else {
+        var root_entries = FAT_dir_entry[br.bpb.root_entries] @ fd :
+            (br.bpb.bytes_per_sector as uint32)#B *
+            (br.bpb.reserved_sectors + br.bpb.nr_of_fats * br.bpb.sectors_per_fat);
+
+        for (entry in root_entries) {
+            if (entry.name.raw[0] == 0)
+                break;
+
+            if (comps'length == 0) {
+                dump_entry(entry);
+            } else if (entry.is_dir && entry.full_name == comps[0]) {
+                descent_dir(entry.first_cluster, comps'length > 1 ? comps[1:] : string[]());
+                break;
+            }
+        }
+    }
+}
+
+if (argv'length != 1 && argv'length != 2) {
+    print "usage: fatdir IMAGE [DIR]\n";
+    exit(1);
+}
+
+var filename = argv[0];
+var dirname = (argv'length == 2) ? argv[1] : "/";
+
+try {
+    var fd = open(filename, IOS_M_RDONLY);
+    dump_dir(fd, dirname);
+} catch (Exception e) {
+    if (e == E_constraint)
+        printf "`%s' is not a valid FAT image\n", filename;
+    else if (e == E_io)
+        printf "Couldn't open file `%s'\n", filename;
+    else
+        raise e;
+
+    exit(1);
+}

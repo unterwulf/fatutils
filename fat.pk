@@ -1,0 +1,263 @@
+fun rpad = (string str, uint16 len, char ch = ' ') string: {
+    return (str'length < len) ? str + (ch as string)*(len - str'length) : str;
+}
+
+fun lpad = (string str, uint16 len, char ch = ' ') string: {
+    return (str'length < len) ? (ch as string)*(len - str'length) + str : str;
+}
+
+fun ltos0 = (long l) string: {
+    return lpad(ltos(l), 2, '0');
+}
+
+type FAT_DOS20_BPB = struct {
+    little uint16 bytes_per_sector;
+    uint8 sectors_per_cluster;
+    little uint16 reserved_sectors;
+    uint8 nr_of_fats;
+    little uint16 root_entries;
+    little uint16 sectors_on_disk;
+    uint8 media_descriptor;
+    little uint16 sectors_per_fat;
+};
+
+type FAT_DOS30_BPB = struct {
+    FAT_DOS20_BPB base;
+    little uint16 phys_sect_per_track;
+    little uint16 nr_heads;
+    little uint16 nr_hidden_sectors;
+};
+
+type FAT_DOS32_BPB = struct {
+    FAT_DOS30_BPB base;
+    little uint16 total_sectors;
+};
+
+type FAT_DOS331_BPB = struct {
+    FAT_DOS20_BPB base;
+    little uint16 phys_sect_per_track;
+    little uint16 nr_heads;
+    little uint32 nr_hidden_sectors;
+    little uint32 total_logical_sectors;
+};
+
+type FAT_DOS40_EBPB = struct {
+    little uint16 bytes_per_sector;
+    uint8 sectors_per_cluster;
+    little uint16 reserved_sectors;
+    uint8 nr_of_fats;
+    little uint16 root_entries;
+    little uint16 total_sectors_16;
+    uint8 media_descriptor;
+    little uint16 sectors_per_fat;
+
+    little uint16 phys_sect_per_track;
+    little uint16 nr_heads;
+    little uint32 nr_hidden_sectors;
+    little uint32 total_sectors_32;
+
+    pinned struct {
+        struct {
+            uint8         phys_drv_number;
+            uint8         flags;
+            uint8         ext_boot_sign;
+            little uint32 vol_serial_num;
+            byte[11]      vol_label;
+            byte[8]       fs_type;
+        } fat1x;
+        struct {
+            little uint32 sectors_per_fat_32;
+            little uint16 ext_flags;
+            little uint16 fs_ver;
+            little uint32 root_cluster;
+            little uint16 fs_info;
+            little uint16 backup_boot_sec;
+            byte[12]      reserved;
+            uint8         phys_drv_number;
+            uint8         flags;
+            uint8         ext_boot_sign;
+            little uint32 vol_serial_num;
+            byte[11]      vol_label;
+            byte[8]       fs_type;
+        } fat32;
+    } u;
+
+    method root_dir_sectors = uint32:
+    {
+        return (root_entries*32 + (bytes_per_sector - 1))/bytes_per_sector;
+    }
+
+    method first_data_sector = uint32:
+    {
+        return reserved_sectors + nr_of_fats*sectors_per_fat + root_dir_sectors;
+    }
+
+    method total_sectors = uint32:
+    {
+        return total_sectors_16 ? total_sectors_16 as uint32 : total_sectors_32;
+    }
+
+    method nr_data_clusters = uint32:
+    {
+        return (total_sectors - first_data_sector) / sectors_per_cluster;
+    }
+
+    method cluster_sz = uint32:
+    {
+        return sectors_per_cluster * bytes_per_sector as uint32;
+    }
+
+    method cluster_offset = (uint32 cluster) offset<uint32,B>:
+    {
+        var data_offset = bytes_per_sector * first_data_sector;
+        return (data_offset + cluster_sz*(cluster - 2))#B;
+    }
+
+    method fat_bits = uint8:
+    {
+        var nr_clusters = nr_data_clusters;
+        if (nr_clusters < 4085)
+            return 12;
+        else if (nr_clusters < 65525)
+            return 16;
+        return 32;
+    }
+
+    method bad_cluster = uint32:
+    {
+        return ((0xFFFFFFFF .>> (32 - fat_bits)) - 8) & 0x0FFFFFFF;
+    }
+};
+
+type FAT_boot_record = struct {
+    byte[3]         jmp;
+    byte[8]         oem_id;
+    FAT_DOS40_EBPB  bpb;
+
+    method _print = void: {
+        printf "                OEM ID: %s\n", catos(oem_id);
+        printf "      Bytes per sector: %u16d\n", bpb.bytes_per_sector;
+        printf "   Sectors per cluster: %u16d\n", bpb.sectors_per_cluster;
+        printf "      Reserved sectors: %u16d\n", bpb.reserved_sectors;
+        printf "        Number of FATs: %u8d\n", bpb.nr_of_fats;
+        printf "Root directory entries: %u16d\n", bpb.root_entries;
+        printf "    Total sectors (16): %u16d\n", bpb.total_sectors_16;
+        printf "      Media descriptor: %u8x\n", bpb.media_descriptor;
+        printf "       Sectors per FAT: %u16d\n", bpb.sectors_per_fat;
+        printf "Phys sectors per track: %u16d\n", bpb.phys_sect_per_track;
+        printf "                 Heads: %u16d\n", bpb.nr_heads;
+        printf "        Hidden sectors: %u32d\n", bpb.nr_hidden_sectors;
+        printf "    Total sectors (32): %u32d\n", bpb.total_sectors_32;
+
+        if (bpb.fat_bits != 32) {
+            printf "     Phys drive number: %u8d\n",  bpb.u.fat1x.phys_drv_number;
+            printf "                 Flags: %u8d\n",  bpb.u.fat1x.flags;
+            printf "   Ext. boot signature: %u8x\n",  bpb.u.fat1x.ext_boot_sign;
+
+            if (bpb.u.fat1x.ext_boot_sign == 0x28 || bpb.u.fat1x.ext_boot_sign == 0x29)
+                printf "  Volume serial number: %u32x\n", bpb.u.fat1x.vol_serial_num;
+
+            if (bpb.u.fat1x.ext_boot_sign == 0x29) {
+                printf "          Volume label: %s\n",    catos(bpb.u.fat1x.vol_label);
+                printf "         Filesystem ID: %s\n",    catos(bpb.u.fat1x.fs_type);
+            }
+        } else {
+            printf "     Phys drive number: %u8d\n",  bpb.u.fat32.phys_drv_number;
+            printf "                 Flags: %u8d\n",  bpb.u.fat32.flags;
+            printf "   Ext. boot signature: %u8x\n",  bpb.u.fat32.ext_boot_sign;
+            printf "  Volume serial number: %u32x\n", bpb.u.fat32.vol_serial_num;
+            printf "          Volume label: %s\n",    catos(bpb.u.fat32.vol_label);
+            printf "         Filesystem ID: %s\n",    catos(bpb.u.fat32.fs_type);
+        }
+    }
+};
+
+type FAT_dir_entry = struct {
+    pinned struct {
+        struct {
+            byte[8] name;
+            byte[3] extension;
+        } parts;
+        byte[11] raw;
+    } name;
+    uint8 attrib;
+    uint8 attrib2;
+    uint8 ctime_or_1stchar;
+    little uint16 ctime;
+    little uint16 cdate;
+    little uint16 adate;
+    little uint16 attrib3;
+    little uint16 mtime;
+    little uint16 mdate;
+    little uint16 first_cluster;
+    little uint32 size;
+
+    method date_year  = (uint16 date) uint16: { return 1980 + (date .>> 9); }
+    method date_month = (uint16 date) uint8: { return (date .>> 5) & 0b1111UH; }
+    method date_day   = (uint16 date) uint8: { return (date & 0b11111UH); }
+
+    method time_hours   = (uint16 time) uint8: { return (time .>> 11); }
+    method time_minutes = (uint16 time) uint8: { return (time .>> 5) & 0b111111UH; }
+    method time_seconds = (uint16 time) uint8: { return (time & 0b11111UH) * 2; }
+
+    method date_str = (uint16 date) string: {
+        return ltos(date_year(date)) + "-" + ltos0(date_month(date)) + "-" + ltos0(date_day(date));
+    }
+
+    method time_str = (uint16 time) string: {
+        return ltos0(time_hours(time)) + ":" + ltos0(time_minutes(time)) + ":" + ltos0(time_seconds(time));
+    }
+
+    method is_label = bit: { return attrib & 0x08 ? 1 : 0; }
+    method is_dir   = bit: { return attrib & 0x10 ? 1 : 0; }
+    method is_deleted = bit: { return (name.raw[0] == 0xE5); }
+
+    method attr_str = string: {
+        return
+        ((attrib & 0x01) ? "r" : "-") +
+        ((attrib & 0x02) ? "h" : "-") +
+        ((attrib & 0x04) ? "s" : "-") +
+        (is_label        ? "v" : "-") +
+        (is_dir          ? "d" : "-") +
+        ((attrib & 0x20) ? "a" : "-");
+    }
+
+    method full_name = string: {
+        var namecopy = unmap(name.parts.name);
+        if (is_deleted)
+            namecopy[0] = 'x';
+        var ext = rtrim(catos(name.parts.extension));
+        var str = rtrim(catos(namecopy));
+        if (ext'length)
+            str += "." + ext;
+        return str;
+    }
+
+    method _print = void: {
+        printf "%s %s %s %s %s %s %s\n",
+            attr_str,
+            rpad(full_name, 12),
+            date_str(mdate), time_str(mtime),
+            date_str(adate),
+            lpad(ltos(first_cluster), 4),
+            lpad(ltos(size), 7);
+    }
+};
+
+fun fat_next_cluster = (byte[] fat, uint8 bits, uint32 idx) uint32:
+{
+    if (bits == 12) {
+        var i = idx * 3 / 2;
+        if (idx % 2)
+            return (fat[i] .>> 4) | (fat[i+1] as uint<12> <<. 4);
+        return fat[i] | (fat[i+1] & 0xf) as uint<12> <<. 8;
+    } else if (bits == 16) {
+        var i = idx * 2;
+        return fat[i] | ((fat[i+1] as uint16) <<. 8);
+    } else if (bits == 32) {
+        var i = idx * 4;
+        return fat[i] | ((fat[i+1] as uint32) <<. 8) |
+               ((fat[i+2] as uint32) <<. 16) | ((fat[i+3] as uint32) <<. 24);
+    }
+    return 0;
+}

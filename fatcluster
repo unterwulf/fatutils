@@ -1,0 +1,39 @@
+#!/usr/bin/poke -L
+!#
+load fat;
+
+if (argv'length != 2) {
+    print "usage: fatcluster IMAGE CLUSTERNUM\n";
+    exit(1);
+}
+
+var imagename = argv[0];
+var cluster = atoi(argv[1]);
+var output = open("<stdout>");
+
+try {
+    var fd = open(imagename, 0);
+    var br = FAT_boot_record @ fd : 0#B;
+
+    if (cluster < 2 || cluster >= br.bpb.bad_cluster) {
+        printf "Cluster %u32d is not a data cluster\n", cluster;
+        exit(1);
+    } else if (cluster > br.bpb.nr_data_clusters) {
+        printf "Cluster number exceeds file system size\n";
+        exit(1);
+    }
+
+    copy :from br.bpb.cluster_offset(cluster)
+         :to 0#B
+         :size br.bpb.cluster_sz#B
+         :from_ios fd :to_ios output;
+} catch (Exception e) {
+    if (e == E_constraint)
+        printf "`%s' is not a valid FAT image\n", imagename;
+    else if (e == E_io)
+        printf "Couldn't open file `%s'\n", imagename;
+    else
+        raise e;
+
+    exit(1);
+}

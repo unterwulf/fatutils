@@ -1,0 +1,177 @@
+#!/usr/bin/poke -L
+!#
+/* (c) 2021 Vitaly Sinilin.  */
+
+load argp;
+load fat;
+
+var g_progname = "fatanalyze";
+var g_version = "20210511";
+var g_verbose = 0;
+
+fun dump_info = (int32 fd) void:
+{
+    var br = FAT_boot_record @ fd : 0#B;
+    var fat_bits = br.bpb.fat_bits;
+    var bad_cluster = br.bpb.bad_cluster;
+
+    var fat = byte[br.bpb.sectors_per_fat*br.bpb.bytes_per_sector]
+         @ fd : (br.bpb.reserved_sectors*br.bpb.bytes_per_sector)#B;
+    var nr_data_clusters = br.bpb.nr_data_clusters;
+    fun descent_dir = (uint32 cluster, uint32 first_cluster, uint32 parent_cluster, string path) void: {};
+
+    fun check_dir_entry = (FAT_dir_entry entry, uint32 dir_cluster, uint32 parent_cluster, string path) void:
+    {
+        var filename = path + "/" + entry.full_name;
+
+        if (g_verbose)
+            printf "%s\n", filename;
+
+        if (entry.is_label) {
+            if (entry.first_cluster != 0)
+                printf "%s: label has invalid first cluster %u32d\n", filename, entry.first_cluster;
+            if (entry.size != 0)
+                printf "%s: label has non-zero size %u32d\n", filename, entry.size;
+        } else if (!entry.is_deleted) {
+            var rawname = catos(entry.name.raw);
+
+            if (rawname == ".          ") {
+                if (dir_cluster == 0)
+                    printf "%s: root directory contains dot entry\n", path;
+                if (!entry.is_dir)
+                    printf "%s: dot entry has no directory attribute\n", path;
+                if (entry.first_cluster != dir_cluster)
+                    printf "%s: dot entry points to some other cluster (%u32d != %u32d)\n", path, entry.first_cluster, dir_cluster;
+                if (entry.size != 0)
+                    printf "%s: dot entry has non-zero size %u32d\n", path, entry.size;
+            } else if (rawname == "..         ") {
+                if (dir_cluster == 0)
+                    printf "%s: root directory contains dotdot entry\n", path;
+                if (!entry.is_dir)
+                    printf "%s: dotdot entry has no directory attribute\n", path;
+                if (entry.first_cluster != parent_cluster)
+                    printf "%s: dotdot entry points to some other cluster (%u32d != %u32d)\n", path, entry.first_cluster, dir_cluster;
+                if (entry.size != 0)
+                    printf "%s: dotdot entry has non-zero size %u32d\n", path, entry.size;
+            } else if (entry.first_cluster < 2 || entry.first_cluster >= bad_cluster) {
+                printf "%s: invalid first cluster %u32d\n", filename, entry.first_cluster;
+            } else {
+                if (entry.is_dir) {
+                    descent_dir(entry.first_cluster, entry.first_cluster, dir_cluster, path + "/" + entry.full_name);
+                } else {
+                    var nr_frags = 1;
+                    var next_cluster = entry.first_cluster;
+                    while (next_cluster < bad_cluster) {
+                        var prev_cluster = next_cluster;
+                        next_cluster = fat_next_cluster(fat, fat_bits, next_cluster);
+                        if (next_cluster < bad_cluster && next_cluster != prev_cluster+1)
+                            nr_frags++;
+                    }
+                    if (nr_frags != 1)
+                        printf "%s: more than one fragment: %u32d\n", filename, nr_frags;
+                }
+            }
+        }
+    }
+
+    descent_dir = lambda (uint32 cluster, uint32 first_cluster, uint32 parent_cluster, string path) void:
+    {
+        var entries = FAT_dir_entry[br.bpb.sectors_per_cluster*br.bpb.bytes_per_sector as uint32/32]
+            @ fd : br.bpb.cluster_offset(cluster);
+
+        for (var i = 0; i < entries'length; i++) {
+            if (entries[i].name.raw[0] == 0)
+                return;
+            if (cluster == first_cluster) {
+                if (i == 0) {
+                    if (catos(entries[i].name.raw) != ".          ")
+                        printf "%s: first directory entry is not dot: %s", path, entries[i].full_name;
+                } else if (i == 1) {
+                    if (catos(entries[i].name.raw) != "..         ")
+                        printf "%s: second directory entry is not dotdot: %s", path, entries[i].full_name;
+                }
+            }
+
+            check_dir_entry(entries[i], first_cluster, parent_cluster, path);
+        }
+
+        /* Directory spans over more than one cluster. */
+        descent_dir(fat_next_cluster(fat, fat_bits, cluster), first_cluster, parent_cluster, path);
+    };
+
+    if (fat_bits == 32) {
+        descent_dir(br.bpb.u.fat32.root_cluster, 0, 0, "");
+    } else {
+        var root_entries = FAT_dir_entry[br.bpb.root_entries] @ fd :
+            (br.bpb.bytes_per_sector as uint32)#B *
+            (br.bpb.reserved_sectors + br.bpb.nr_of_fats * br.bpb.sectors_per_fat);
+
+        for (entry in root_entries) {
+            if (entry.name.raw[0] == 0)
+                break;
+
+            check_dir_entry(entry, 0, 0, "");
+        }
+    }
+}
+
+var g_opts = Argp_Option[]();
+
+fun usage = void:
+{
+    printf "usage: %s -v IMAGE\n", g_progname;
+    printf "FAT filesystem analyzer, version %s\n", g_version;
+    print "\nOptions:\n";
+
+    for (opt in g_opts)
+        printf "  %s%s%s%s%s\n",
+                opt.name != "" ? "-" + opt.name : "",
+                opt.name != "" && opt.long_name != "" ? ", " : "    ",
+                opt.long_name != "" ? "--" + opt.long_name : "",
+                opt.arg_required ?
+                (opt.arg_name == "" ? "=ARG\t" : "=" + opt.arg_name + "\t") : "\t\t",
+                opt.summary;
+
+    exit (0);
+}
+
+g_opts += [
+    Argp_Option {
+        name="v", long_name="verbose",
+        summary="print more details",
+        handler=lambda (string arg) void: { g_verbose = 1; }
+    },
+    Argp_Option {
+        name="V", long_name="version",
+        summary="print version and exit",
+        handler=lambda (string arg) void: { argp_do_version(g_progname, g_version); }
+    },
+    Argp_Option {
+        name="h", long_name="help",
+        summary="print a help message and exit",
+        handler=lambda (string arg) void: { usage; }
+    }
+];
+
+var args = argp_parse(g_progname, g_version, "", g_opts, argv);
+
+if (args'length != 1) {
+    print "Exactly one image file must be specified\n";
+    exit(1);
+}
+
+var filename = args[0];
+
+try {
+    var fd = open(filename, IOS_M_RDONLY);
+    dump_info(fd);
+} catch (Exception e) {
+    if (e == E_constraint)
+        printf "`%s' is not a valid FAT image\n", filename;
+    else if (e == E_io)
+        printf "Couldn't open file `%s'\n", filename;
+    else
+        raise e;
+
+    exit(1);
+}

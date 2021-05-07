@@ -1,0 +1,53 @@
+#!/usr/bin/poke -L
+!#
+/* (c) 2021 Vitaly Sinilin.  */
+
+load fat;
+
+fun dump_map = (int32 fd) void:
+{
+    var br = FAT_boot_record @ fd : 0#B;
+    var fat = byte[br.bpb.sectors_per_fat*br.bpb.bytes_per_sector]
+         @ fd : (br.bpb.reserved_sectors*br.bpb.bytes_per_sector)#B;
+    var clusters = fat'size/#B * 8 / br.bpb.fat_bits;
+    var nr_data_clusters = br.bpb.nr_data_clusters;
+    var fat_bits = br.bpb.fat_bits;
+    var bad_cluster = br.bpb.bad_cluster;
+
+    for (var idx = 0; idx < clusters; idx++) {
+        var entry = fat_next_cluster(fat, fat_bits, idx);
+        if (idx == nr_data_clusters + 2)
+            print "|";
+        else if (entry == 0)
+            print "_";
+        else if (entry == bad_cluster)
+            print "B";
+        else
+            print "U";
+        if ((idx + 1) % 64 == 0)
+            print "\n";
+    }
+    if (clusters % 64)
+        print "\n";
+}
+
+if (argv'length != 1) {
+    print "usage: fatmap IMAGE\n";
+    exit(1);
+}
+
+var filename = argv[0];
+
+try {
+    var fd = open(filename, IOS_M_RDONLY);
+    dump_map(fd);
+} catch (Exception e) {
+    if (e == E_constraint)
+        printf "`%s' is not a valid FAT image\n", filename;
+    else if (e == E_io)
+        printf "Couldn't open file `%s'\n", filename;
+    else
+        raise e;
+
+    exit(1);
+}
