@@ -13,7 +13,7 @@ var output = open("<stdout>");
 
 try {
     var fd = open(imagename, 0);
-    var br = FAT_boot_record @ fd : 0#B;
+    var br = unmap FAT_boot_record @ fd : 0#B;
 
     if (cluster < 2 || cluster >= br.bpb.bad_cluster) {
         printf "Cluster %u32d is not a data cluster\n", cluster;

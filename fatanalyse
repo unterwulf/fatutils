@@ -11,11 +11,11 @@ var g_verbose = 0;
 
 fun dump_info = (int32 fd) void:
 {
-    var br = FAT_boot_record @ fd : 0#B;
+    var br = unmap FAT_boot_record @ fd : 0#B;
     var fat_bits = br.bpb.fat_bits;
     var bad_cluster = br.bpb.bad_cluster;
 
-    var fat = byte[br.bpb.sectors_per_fat*br.bpb.bytes_per_sector]
+    var fat = unmap byte[br.bpb.sectors_per_fat*br.bpb.bytes_per_sector]
          @ fd : (br.bpb.reserved_sectors*br.bpb.bytes_per_sector)#B;
     var nr_data_clusters = br.bpb.nr_data_clusters;
     fun descent_dir = (uint32 cluster, uint32 first_cluster, uint32 parent_cluster, string path) void: {};
@@ -76,7 +76,7 @@ fun dump_info = (int32 fd) void:
 
     descent_dir = lambda (uint32 cluster, uint32 first_cluster, uint32 parent_cluster, string path) void:
     {
-        var entries = FAT_dir_entry[br.bpb.sectors_per_cluster*br.bpb.bytes_per_sector as uint32/32]
+        var entries = unmap FAT_dir_entry[br.bpb.sectors_per_cluster*br.bpb.bytes_per_sector as uint32/32]
             @ fd : br.bpb.cluster_offset(cluster);
 
         for (var i = 0; i < entries'length; i++) {
@@ -102,7 +102,7 @@ fun dump_info = (int32 fd) void:
     if (fat_bits == 32) {
         descent_dir(br.bpb.u.fat32.root_cluster, 0, 0, "");
     } else {
-        var root_entries = FAT_dir_entry[br.bpb.root_entries] @ fd :
+        var root_entries = unmap FAT_dir_entry[br.bpb.root_entries] @ fd :
             (br.bpb.bytes_per_sector as uint32)#B *
             (br.bpb.reserved_sectors + br.bpb.nr_of_fats * br.bpb.sectors_per_fat);
 

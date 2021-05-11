@@ -20,6 +20,4 @@ user to install them system-wide (tune PREFIX value, default is /usr/local):
 Known issues
 ============
 
-All utils but fatinfo and fatcluster works painfully slow. They are in fact
-useless for anything bigger than FAT12 due to performance issues. Contact me
-if you know what is wrong with them.
+Long file names are not supported.

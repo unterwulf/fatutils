@@ -6,7 +6,7 @@ load fat;
 
 fun dump_info = (int32 fd) void:
 {
-    var br = FAT_boot_record @ fd : 0#B;
+    var br = unmap FAT_boot_record @ fd : 0#B;
     br._print;
 
     var nr_fat_clusters = br.bpb.sectors_per_fat as uint64 * br.bpb.bytes_per_sector * 8 / br.bpb.fat_bits;
